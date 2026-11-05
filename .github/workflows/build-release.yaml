@@ -1,0 +1,146 @@
+name: Build-Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "tag: git tag you want create. (sample 1.0.0)"
+        required: true
+      dry-run:
+        description: "dry-run: true will never create relase/nuget."
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    permissions:
+      contents: read
+    uses: Cysharp/Actions/.github/workflows/validate-release.yaml@main
+    with:
+      tag: ${{ inputs.tag }}
+
+  update-packagejson:
+    needs: [validate-release]
+    permissions:
+      actions: read
+      contents: write
+    uses: Cysharp/Actions/.github/workflows/update-packagejson.yaml@main
+    with:
+      file-path: ./src/Ulid.Unity/Assets/Scripts/Ulid/package.json
+      tag: ${{ needs.validate-release.outputs.tag }}
+      dry-run: ${{ inputs.dry-run }}
+
+  build-dotnet:
+    needs: [validate-release, update-packagejson]
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: Cysharp/Actions/.github/actions/checkout@main
+        with:
+          ref: ${{ needs.update-packagejson.outputs.sha }}
+      - uses: Cysharp/Actions/.github/actions/setup-dotnet@main
+      - run: dotnet build -c Release -p:Version=${{ needs.validate-release.outputs.tag }}
+      - run: dotnet test -c Release
+      - run: dotnet pack -c Release --no-build -p:Version=${{ needs.validate-release.outputs.tag }} -p:IncludeSymbols=true -p:SymbolPackageFormat=snupkg -o ./publish
+      # Store artifacts.
+      - uses: Cysharp/Actions/.github/actions/upload-artifact@main
+        with:
+          name: nuget
+          path: ./publish/
+          retention-days: 1
+
+  build-unity:
+    needs: [validate-release, update-packagejson]
+    strategy:
+      matrix:
+        unity: ["2021.3.41f1"]
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Load secrets
+        id: op-load-secret
+        uses: 1password/load-secrets-action@581a835fb51b8e7ec56b71cf2ffddd7e68bb25e0 # v2.0.0
+        with:
+          export-env: false
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_PUBLIC }}
+          UNITY_EMAIL: "op://${{ vars.OP_VAULT_ACTIONS_PUBLIC }}/UNITY_LICENSE/username"
+          UNITY_PASSWORD: "op://${{ vars.OP_VAULT_ACTIONS_PUBLIC }}/UNITY_LICENSE/credential"
+          UNITY_SERIAL: "op://${{ vars.OP_VAULT_ACTIONS_PUBLIC }}/UNITY_LICENSE/serial"
+
+      - uses: Cysharp/Actions/.github/actions/checkout@main
+        with:
+          ref: ${{ needs.update-packagejson.outputs.sha }}
+
+      # Execute scripts: Export Package
+      # /opt/Unity/Editor/Unity -quit -batchmode -nographics -silent-crashes -logFile -projectPath . -executeMethod PackageExporter.Export
+      - name: Build Unity (.unitypacakge)
+        uses: Cysharp/Actions/.github/actions/unity-builder@main
+        env:
+          UNITY_EMAIL: ${{ steps.op-load-secret.outputs.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ steps.op-load-secret.outputs.UNITY_PASSWORD }}
+          UNITY_SERIAL: ${{ steps.op-load-secret.outputs.UNITY_SERIAL }}
+          UNITY_PACKAGE_VERSION: ${{ needs.validate-release.outputs.tag }}
+        with:
+          projectPath: src/Ulid.Unity
+          unityVersion: ${{ matrix.unity }}
+          targetPlatform: StandaloneLinux64
+          buildMethod: PackageExporter.Export
+
+      - uses: Cysharp/Actions/.github/actions/check-metas@main # check meta files
+        with:
+          directory: src/Ulid.Unity
+
+      # Store artifacts.
+      - uses: Cysharp/Actions/.github/actions/upload-artifact@main
+        with:
+          name: Ulid.Unity.${{ needs.validate-release.outputs.tag }}.unitypackage
+          path: ./src/Ulid.Unity/Ulid.Unity.${{ needs.validate-release.outputs.tag }}.unitypackage
+          retention-days: 1
+
+  # release
+  create-release:
+    needs: [validate-release, update-packagejson, build-dotnet, build-unity]
+    permissions:
+      contents: write
+    uses: Cysharp/Actions/.github/workflows/create-release.yaml@main
+    with:
+      commit-id: ${{ needs.update-packagejson.outputs.sha }}
+      dry-run: ${{ inputs.dry-run }}
+      tag: ${{ needs.validate-release.outputs.tag }}
+      release-upload: true
+      release-asset-path: ./Ulid.Unity.${{ needs.validate-release.outputs.tag }}.unitypackage/Ulid.Unity.${{ needs.validate-release.outputs.tag }}.unitypackage
+    secrets: inherit
+
+  publish-package:
+    needs: [validate-release, create-release]
+    if: ${{ !inputs.dry-run }}
+    permissions:
+      contents: read
+      id-token: write # required for NuGet Trusted Publish in the calling repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: Cysharp/Actions/.github/actions/publish-nuget@main
+        with:
+          artifact-name: nuget
+          user: ${{ secrets.NUGET_USER }}
+          version: ${{ needs.validate-release.outputs.version }}
+
+  cleanup:
+    if: ${{ always() && needs.update-packagejson.outputs.is-branch-created == 'true' }}
+    needs: [update-packagejson, create-release, publish-package]
+    permissions:
+      contents: write
+    uses: Cysharp/Actions/.github/workflows/clean-packagejson-branch.yaml@main
+    with:
+      branch: ${{ needs.update-packagejson.outputs.branch-name }}

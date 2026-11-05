@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;netstandard2.1</TargetFrameworks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!-- NuGet -->
+    <IsPackable>true</IsPackable>
+    <PackageId>Ulid.MessagePack</PackageId>
+    <Description>Ulid MessagePack Formatter.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MessagePack" Version="2.1.90" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ulid\Ulid.csproj" />
+  </ItemGroup>
+
+</Project>
