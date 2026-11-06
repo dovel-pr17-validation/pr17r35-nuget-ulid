@@ -17,7 +17,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="ConsoleAppFramework" Version="2.1.0" />
+    <PackageReference Include="ConsoleAppFramework" Version="2.4.0" />
   </ItemGroup>
 
   <ItemGroup>
